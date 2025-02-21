@@ -1,3 +1,4 @@
+name: file-uploads-test-server
 services:
   app:
     build: .
