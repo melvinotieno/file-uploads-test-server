@@ -42,8 +42,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     } else {
-        echo "No file uploaded.";
+        $content_range = isset($_SERVER['HTTP_CONTENT_RANGE']) ? $_SERVER['HTTP_CONTENT_RANGE'] : null;
+
+        if ($content_range) {
+            // Handle resumable upload
+            $response = handleResumableUpload();
+        } else {
+            // Handle raw binary upload
+            $response = handleBinaryUpload();
+        }
     }
+
+    // Send JSON response
+    header('Content-Type: application/json');
+    echo json_encode($response);
+    exit;
 } else {
     // Return 405 Method Not Allowed for non-POST requests.
     header('HTTP/1.1 405 Method Not Allowed');
@@ -83,6 +96,80 @@ function handleRegularUpload($file) {
     return array(
         'success' => false,
         'error' => 'Failed to move uploaded file'
+    );
+}
+
+function handleResumableUpload() {
+    global $uploads_dir;
+
+    $content_range = $_SERVER['HTTP_CONTENT_RANGE'];
+    preg_match('/bytes (\d+)-(\d+)\/(\d+)/', $content_range, $matches);
+
+    if (!$matches) {
+        return array(
+            'success' => false,
+            'error' => 'Invalid Content-Range header'
+        );
+    }
+
+    $range_start = intval($matches[1]);
+    $range_end = intval($matches[2]);
+    $file_size = intval($matches[3]);
+
+    $filename = sanitizeFilename($_SERVER['HTTP_X_FILE_NAME'] ??
+                               ($_GET['filename'] ??
+                               'chunk_' . time()));
+    $filepath = $uploads_dir . '/' . $filename;
+
+    // Read the input stream
+    $input = fopen('php://input', 'rb');
+    $file = fopen($filepath, ($range_start === 0) ? 'wb' : 'ab');
+
+    // Write the chunk
+    stream_copy_to_stream($input, $file);
+
+    fclose($input);
+    fclose($file);
+
+    // Check if upload is complete
+    $current_size = filesize($filepath);
+    $is_complete = $current_size >= $file_size;
+
+    return array(
+        'success' => true,
+        'filename' => $filename,
+        'bytesReceived' => $current_size,
+        'complete' => $is_complete
+    );
+}
+
+function handleBinaryUpload() {
+    global $uploads_dir;
+
+    if (!isset($_SERVER['HTTP_X_FILE_NAME'])) {
+        return array(
+            'success' => false,
+            'error' => 'X-File-Name header is required for binary uploads'
+        );
+    }
+
+    $filename = sanitizeFilename($_SERVER['HTTP_X_FILE_NAME']);
+    $filepath = $uploads_dir . '/' . $filename;
+
+    // Read the input stream
+    $input = fopen('php://input', 'rb');
+    $file = fopen($filepath, 'wb');
+
+    // Copy the stream
+    $bytes_written = stream_copy_to_stream($input, $file);
+
+    fclose($input);
+    fclose($file);
+
+    return array(
+        'success' => true,
+        'filename' => $filename,
+        'size' => $bytes_written
     );
 }
 
